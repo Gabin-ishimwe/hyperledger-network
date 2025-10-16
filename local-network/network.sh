@@ -94,38 +94,22 @@ function checkPrereqs() {
     fi
   done
 
-  ## check for cfssl binaries
-  if [ "$CRYPTO" == "cfssl" ]; then
-  
-    cfssl version > /dev/null 2>&1
-    if [[ $? -ne 0 ]]; then
-      errorln "cfssl binary not found.."
-      errorln
-      errorln "Follow the instructions to install the cfssl and cfssljson binaries:"
-      errorln "https://github.com/cloudflare/cfssl#installation"
-      exit 1
-    fi
+  ## Check for fabric-ca (always required)
+  fabric-ca-client version > /dev/null 2>&1
+  if [[ $? -ne 0 ]]; then
+    errorln "fabric-ca-client binary not found.."
+    errorln
+    errorln "Follow the instructions in the Fabric docs to install the Fabric Binaries:"
+    errorln "https://hyperledger-fabric.readthedocs.io/en/latest/install.html"
+    exit 1
   fi
+  CA_LOCAL_VERSION=$(fabric-ca-client version | sed -ne 's/ Version: //p')
+  CA_DOCKER_IMAGE_VERSION=$(${CONTAINER_CLI} run --rm hyperledger/fabric-ca:latest fabric-ca-client version | sed -ne 's/ Version: //p' | head -1)
+  infoln "CA_LOCAL_VERSION=$CA_LOCAL_VERSION"
+  infoln "CA_DOCKER_IMAGE_VERSION=$CA_DOCKER_IMAGE_VERSION"
 
-  ## Check for fabric-ca
-  if [ "$CRYPTO" == "Certificate Authorities" ]; then
-
-    fabric-ca-client version > /dev/null 2>&1
-    if [[ $? -ne 0 ]]; then
-      errorln "fabric-ca-client binary not found.."
-      errorln
-      errorln "Follow the instructions in the Fabric docs to install the Fabric Binaries:"
-      errorln "https://hyperledger-fabric.readthedocs.io/en/latest/install.html"
-      exit 1
-    fi
-    CA_LOCAL_VERSION=$(fabric-ca-client version | sed -ne 's/ Version: //p')
-    CA_DOCKER_IMAGE_VERSION=$(${CONTAINER_CLI} run --rm hyperledger/fabric-ca:latest fabric-ca-client version | sed -ne 's/ Version: //p' | head -1)
-    infoln "CA_LOCAL_VERSION=$CA_LOCAL_VERSION"
-    infoln "CA_DOCKER_IMAGE_VERSION=$CA_DOCKER_IMAGE_VERSION"
-
-    if [ "$CA_LOCAL_VERSION" != "$CA_DOCKER_IMAGE_VERSION" ]; then
-      warnln "Local fabric-ca binaries and docker images are out of sync. This may cause problems."
-    fi
+  if [ "$CA_LOCAL_VERSION" != "$CA_DOCKER_IMAGE_VERSION" ]; then
+    warnln "Local fabric-ca binaries and docker images are out of sync. This may cause problems."
   fi
 }
 
@@ -159,110 +143,47 @@ function createOrgs() {
     rm -Rf organizations/peerOrganizations && rm -Rf organizations/ordererOrganizations
   fi
 
-  # Create crypto material using cryptogen
-  if [ "$CRYPTO" == "cryptogen" ]; then
-    which cryptogen
-    if [ "$?" -ne 0 ]; then
-      fatalln "cryptogen tool not found. exiting"
-    fi
-    infoln "Generating certificates using cryptogen tool"
+  # Always create crypto material using Fabric CA
+  infoln "Generating certificates using Fabric CA"
+  ${CONTAINER_CLI_COMPOSE} -f compose/$COMPOSE_FILE_CA -f compose/$CONTAINER_CLI/${CONTAINER_CLI}-$COMPOSE_FILE_CA up -d 2>&1
 
-    infoln "Creating Org1 Identities"
+  . organizations/fabric-ca/registerEnroll.sh
 
-    set -x
-    cryptogen generate --config=./organizations/cryptogen/crypto-config-org1.yaml --output="organizations"
-    res=$?
-    { set +x; } 2>/dev/null
-    if [ $res -ne 0 ]; then
-      fatalln "Failed to generate certificates..."
-    fi
-
-    infoln "Creating Org2 Identities"
-
-    set -x
-    cryptogen generate --config=./organizations/cryptogen/crypto-config-org2.yaml --output="organizations"
-    res=$?
-    { set +x; } 2>/dev/null
-    if [ $res -ne 0 ]; then
-      fatalln "Failed to generate certificates..."
-    fi
-
-    infoln "Creating Orderer Org Identities"
-
-    set -x
-    cryptogen generate --config=./organizations/cryptogen/crypto-config-orderer.yaml --output="organizations"
-    res=$?
-    { set +x; } 2>/dev/null
-    if [ $res -ne 0 ]; then
-      fatalln "Failed to generate certificates..."
-    fi
-
-  fi
-
-  # Create crypto material using cfssl
-  if [ "$CRYPTO" == "cfssl" ]; then
-
-    . organizations/cfssl/registerEnroll.sh
-    #function_name cert-type   CN   org
-    peer_cert peer peer0.org1.example.com org1
-    peer_cert admin Admin@org1.example.com org1
-
-    infoln "Creating Org2 Identities"
-    #function_name cert-type   CN   org
-    peer_cert peer peer0.org2.example.com org2
-    peer_cert admin Admin@org2.example.com org2
-
-    infoln "Creating Orderer Org Identities"
-    #function_name cert-type   CN   
-    orderer_cert orderer orderer.example.com
-    orderer_cert admin Admin@example.com
-
-  fi 
-
-  # Create crypto material using Fabric CA
-  if [ "$CRYPTO" == "Certificate Authorities" ]; then
-    infoln "Generating certificates using Fabric CA"
-    ${CONTAINER_CLI_COMPOSE} -f compose/$COMPOSE_FILE_CA -f compose/$CONTAINER_CLI/${CONTAINER_CLI}-$COMPOSE_FILE_CA up -d 2>&1
-
-    . organizations/fabric-ca/registerEnroll.sh
-
-    # Make sure CA files have been created
-    while :
-    do
-      if [ ! -f "organizations/fabric-ca/org1/tls-cert.pem" ]; then
-        sleep 1
-      else
-        break
-      fi
-    done
-
-    # Make sure CA service is initialized and can accept requests before making register and enroll calls
-    export FABRIC_CA_CLIENT_HOME=${PWD}/organizations/peerOrganizations/org1.example.com/
-    COUNTER=0
-    rc=1
-    while [[ $rc -ne 0 && $COUNTER -lt $MAX_RETRY ]]; do
+  # Make sure CA files have been created
+  while :
+  do
+    if [ ! -f "organizations/fabric-ca/org1/tls-cert.pem" ]; then
       sleep 1
-      set -x
-      fabric-ca-client getcainfo -u https://admin:adminpw@localhost:7054 --caname ca-org1 --tls.certfiles "${PWD}/organizations/fabric-ca/org1/ca-cert.pem"
-      res=$?
-    { set +x; } 2>/dev/null
-    rc=$res  # Update rc
-    COUNTER=$((COUNTER + 1))
-    done
+    else
+      break
+    fi
+  done
 
-    infoln "Creating Org1 Identities"
+  # Make sure CA service is initialized and can accept requests before making register and enroll calls
+  export FABRIC_CA_CLIENT_HOME=${PWD}/organizations/peerOrganizations/org1.example.com/
+  COUNTER=0
+  rc=1
+  while [[ $rc -ne 0 && $COUNTER -lt $MAX_RETRY ]]; do
+    sleep 1
+    set -x
+    fabric-ca-client getcainfo -u https://admin:adminpw@localhost:7054 --caname ca-org1 --tls.certfiles "${PWD}/organizations/fabric-ca/org1/ca-cert.pem"
+    res=$?
+  { set +x; } 2>/dev/null
+  rc=$res  # Update rc
+  COUNTER=$((COUNTER + 1))
+  done
 
-    createOrg1
+  infoln "Creating Org1 Identities"
 
-    infoln "Creating Org2 Identities"
+  createOrg1
 
-    createOrg2
+  infoln "Creating Org2 Identities"
 
-    infoln "Creating Orderer Org Identities"
+  createOrg2
 
-    createOrderer
+  infoln "Creating Orderer Org Identities"
 
-  fi
+  createOrderer
 
   infoln "Generating CCP files for Org1 and Org2"
   ./organizations/ccp-generate.sh
@@ -304,11 +225,7 @@ function networkUp() {
     createOrgs
   fi
 
-  COMPOSE_FILES="-f compose/${COMPOSE_FILE_BASE} -f compose/${CONTAINER_CLI}/${CONTAINER_CLI}-${COMPOSE_FILE_BASE}"
-
-  if [ "${DATABASE}" == "couchdb" ]; then
-    COMPOSE_FILES="${COMPOSE_FILES} -f compose/${COMPOSE_FILE_COUCH} -f compose/${CONTAINER_CLI}/${CONTAINER_CLI}-${COMPOSE_FILE_COUCH}"
-  fi
+  COMPOSE_FILES="-f compose/${COMPOSE_FILE_BASE} -f compose/${CONTAINER_CLI}/${CONTAINER_CLI}-${COMPOSE_FILE_BASE} -f compose/${COMPOSE_FILE_COUCH} -f compose/${CONTAINER_CLI}/${CONTAINER_CLI}-${COMPOSE_FILE_COUCH}"
 
   DOCKER_SOCK="${DOCKER_SOCK}" ${CONTAINER_CLI_COMPOSE} ${COMPOSE_FILES} up -d 2>&1
 
@@ -476,6 +393,7 @@ function networkDown() {
 }
 
 . ./network.config
+CRYPTO="Certificate Authorities"
 
 # use this as the default docker-compose yaml definition
 COMPOSE_FILE_BASE=compose-test-net.yaml
@@ -548,12 +466,7 @@ while [[ $# -ge 1 ]] ; do
   -bft )
     BFT=1
     ;;
-  -ca )
-    CRYPTO="Certificate Authorities"
-    ;;
-  -cfssl )
-    CRYPTO="cfssl"
-    ;;
+  # removed -ca and -cfssl options; Fabric CA is always used
   -r )
     MAX_RETRY="$2"
     shift
