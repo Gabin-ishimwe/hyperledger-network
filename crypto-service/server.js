@@ -12,7 +12,7 @@ app.use(cors());
 app.use(express.json());
 
 // Base path to crypto materials (will be mounted via Docker volume)
-const CRYPTO_BASE_PATH = process.env.CRYPTO_BASE_PATH || '/app/organizations';
+const CRYPTO_BASE_PATH = process.env.CRYPTO_BASE_PATH || '../local-network/organizations';
 
 /**
  * Utility function to convert org name to MSP ID
