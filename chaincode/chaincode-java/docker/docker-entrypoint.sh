@@ -7,10 +7,9 @@ set -euo pipefail
 : ${DEBUG:="false"}
 
 if [ "${DEBUG,,}" = "true" ]; then
-   npm run start:server-debug
+   exec java -agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=0.0.0.0:8000 -jar /chaincode.jar
 elif [ "${CORE_PEER_TLS_ENABLED,,}" = "true" ]; then
-   npm run start:server
+   exec java -jar /chaincode.jar # todo
 else
-   npm run start:server-nontls
+   exec java -jar /chaincode.jar
 fi
-

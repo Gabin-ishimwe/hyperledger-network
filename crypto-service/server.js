@@ -14,6 +14,36 @@ app.use(express.json());
 // Base path to crypto materials (will be mounted via Docker volume)
 const CRYPTO_BASE_PATH = process.env.CRYPTO_BASE_PATH || '../local-network/organizations';
 
+// Local mode: use localhost instead of peer hostnames (for local development)
+const LOCAL_MODE = process.env.LOCAL_MODE !== 'false'; // Default to true
+
+// Peer port mapping for local development
+// Format: { 'org1.example.com': { 'peer0': 7051, 'peer1': 8051 }, ... }
+const DEFAULT_PEER_PORTS = {
+  'org1.example.com': { 'peer0': 7051 },
+  'org2.example.com': { 'peer0': 9051 }
+};
+
+// Allow custom port mapping via environment variable (JSON string)
+const PEER_PORTS = process.env.PEER_PORTS
+  ? JSON.parse(process.env.PEER_PORTS)
+  : DEFAULT_PEER_PORTS;
+
+/**
+ * Get peer endpoint based on environment mode
+ * In local mode: returns localhost:PORT
+ * In production: returns peerName.orgName:PORT
+ */
+function getPeerEndpoint(orgName, peerName) {
+  const orgPorts = PEER_PORTS[orgName] || {};
+  const port = orgPorts[peerName] || 7051; // Default to 7051 if not configured
+
+  if (LOCAL_MODE) {
+    return `localhost:${port}`;
+  }
+  return `${peerName}.${orgName}:${port}`;
+}
+
 /**
  * Utility function to convert org name to MSP ID
  * Example: "org1.example.com" -> "Org1MSP"
@@ -147,7 +177,7 @@ app.get('/api/crypto/gateway/:orgName/:userName/:peerName', (req, res) => {
       // TLS materials for secure peer communication
       tls: {
         caCert: tlsCaCert,
-        peerEndpoint: `${peerName}.${orgName}:7051`
+        peerEndpoint: getPeerEndpoint(orgName, peerName)
       },
       // Metadata
       metadata: {
@@ -194,12 +224,25 @@ validateSetup();
 app.listen(PORT, () => {
   console.log('🚀 OpenLedger Crypto Service started');
   console.log(`📡 Server running on port ${PORT}`);
+  console.log(`🏠 Mode: ${LOCAL_MODE ? 'LOCAL (using localhost endpoints)' : 'PRODUCTION (using peer hostnames)'}`);
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
   console.log(`📖 Gateway crypto endpoint:`);
   console.log(`   GET /api/crypto/gateway/:orgName/:userName/:peerName`);
   console.log('');
+  console.log(`⚙️  Configured peer ports:`);
+  Object.entries(PEER_PORTS).forEach(([org, peers]) => {
+    Object.entries(peers).forEach(([peer, port]) => {
+      const endpoint = LOCAL_MODE ? `localhost:${port}` : `${peer}.${org}:${port}`;
+      console.log(`   ${peer}.${org} -> ${endpoint}`);
+    });
+  });
+  console.log('');
   console.log(`💡 Example usage:`);
   console.log(`   curl http://localhost:${PORT}/api/crypto/gateway/org1.example.com/User1/peer0`);
+  console.log('');
+  console.log(`🔧 Environment variables:`);
+  console.log(`   LOCAL_MODE=false     # Use peer hostnames instead of localhost`);
+  console.log(`   PEER_PORTS='{"org1.example.com":{"peer0":7051}}'  # Custom port mapping`);
 });
 
 // Graceful shutdown
